@@ -27,3 +27,4 @@ class User(Base):
 
     expenses = relationship("Expense", back_populates="user") #Linked expenses to users via user_id + relationship
 
+print("this is a test")
