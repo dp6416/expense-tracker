@@ -110,4 +110,3 @@ def list_users(db:Session = Depends(database.get_db)):
 
 
 
-print("hello")
