@@ -2,10 +2,29 @@ from fastapi import FastAPI, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from . import database, models, schemas
 import uvicorn
+from passlib.context import CryptContext
 
 
 #Create ALL DB tables:
 models.Base.metadata.create_all(bind=database.engine)
+
+#user security and protocols
+pwd_context = CryptContext(schemas=["bcrypt"], deprecated="auto")
+
+def get_password_hash(password: str) -> str:
+    #hash the plain password
+    return pwd_context.hash(password)
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    #Verify a plain password against the hashed one ( we can still get to the original normal password via the hash due to Salt -> the random variable in the hashed password)
+    return pwd_context.verify(plain_password,hashed_password)
+
+
+
+
+
+
+
 
 
 
@@ -81,7 +100,7 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(database.get_db)
     if existing_user:
         raise HTTPException(status_code=400, detail="Username already exists")
     
-    hashed_password = user.password #  – placeholder for password hashing
+    hashed_password = get_password_hash(user.password) #  – placeholder for password hashing
     db_user = models.User(username=user.username, hashed_password = hashed_password)
     db.add(db_user) #  – add to session
     db.commit()#  – save to DB 
