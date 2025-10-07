@@ -1,15 +1,16 @@
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query, Form
 from sqlalchemy.orm import Session
 from . import database, models, schemas
 import uvicorn
 from passlib.context import CryptContext
+from .auth import create_access_token, get_current_user
 
 
 #Create ALL DB tables:
 models.Base.metadata.create_all(bind=database.engine)
 
 #user security and protocols
-pwd_context = CryptContext(schemas=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def get_password_hash(password: str) -> str:
     #hash the plain password
@@ -18,13 +19,7 @@ def get_password_hash(password: str) -> str:
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     #Verify a plain password against the hashed one ( we can still get to the original normal password via the hash due to Salt -> the random variable in the hashed password)
     return pwd_context.verify(plain_password,hashed_password)
-
-
-
-
-
-
-
+    print("Stored hash:", user.hashed_password)
 
 
 
@@ -40,47 +35,53 @@ def root():
 def health():
     return {"status": "ok"}
 
-#####################################################################################
-
-#POST expenses by User ID @ is a Decorator and automatically assumes the function underneath as a wrapper
-@app.post("/expenses",response_model=schemas.ExpenseRead)
-def create_expense(exp: schemas.ExpenseCreate, user_id:int, db: Session = Depends(database.get_db)):
-    user = db.query(models.User).filter(models.User.id == user_id).first()  # NEW – validate user exists
-    if not user:  # NEW
-        raise HTTPException(status_code=404, detail="User not found")
+#POST TOKEN
+@app.post("/token")
+def login(username: str = Form(...), password: str = Form(...), db: Session = Depends(database.get_db)):
+    #Login and get JWT token#
+    user = db.query(models.User).filter(models.User.username == username).first()
+    if not user or not verify_password(password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     
-    db_exp = models.Expense(**exp.model_dump(), user_id=user.id) #** unpacks dictionary as keyword arguments. So id etc are like variables
+    token = create_access_token(data={"user_id": user.id})
+    return {"access_token": token, "token_type": "bearer"}
+
+#POST EXPENSE
+@app.post("/expenses",response_model=schemas.ExpenseRead)
+def create_expense(exp: schemas.ExpenseCreate, current_user: models.User = Depends(get_current_user), db: Session = Depends(database.get_db)):
+    
+    db_exp = models.Expense(**exp.model_dump(), user_id=current_user.id) 
     db.add(db_exp)
     db.commit()
     db.refresh(db_exp)
     return db_exp
 
-#GET all expenses by UserID e.g. http://127.0.0.1:8000/expenses?user_id=1
+#GET EXPENSE
 @app.get("/expenses", response_model=list[schemas.ExpenseRead])
-def list_expenses(user_id:int, db:Session = Depends(database.get_db)): # ADJUSTED – added user_id
-    user = db.query(models.User).filter(models.User.id==user_id).first()
+def list_expenses( current_user: models.User = Depends(get_current_user), db:Session = Depends(database.get_db)): # ADJUSTED – added user_id
+    user = db.query(models.User).filter(models.User.id==current_user.id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found") 
-    return db.query(models.Expense).filter(models.Expense.user_id == user.id).all()
+    return db.query(models.Expense).filter(models.Expense.user_id == current_user.id).all()
 
-#GET all expenses 
-@app.get("/expenses/all", response_model=list[schemas.ExpenseRead])
-def list_expenses(db:Session = Depends(database.get_db)): # ADJUSTED – added user_id
-    expense = db.query(models.Expense).filter(models.User.id==user_id).first()
-    if not expense:
-        raise HTTPException(status_code=404, detail="There are no expenses in the datatable")
-    return db.query(models.Expense).all()
+# #GET all expenses => security flaw!!
+# @app.get("/expenses/all", response_model=list[schemas.ExpenseRead])
+# def list_expenses(current_user: models.User = Depends(get_current_user), db: Session = Depends(database.get_db)): # ADJUSTED – added user_id
+#     expense = db.query(models.Expense).filter(models.Expense.user_id == current_user.id).first()
+#     if not expense:
+#         raise HTTPException(status_code=404, detail="There are no expenses in the datatable")
+#     return db.query(models.Expense).all()
 
-#FILTER For Expenses => You can now call /expenses/filter?user_id=1&category=food&min_amount=5
+#FILTER For Expenses 
 @app.get("/expenses/filter", response_model=list[schemas.ExpenseRead])
 def filter_expenses(
-    user_id: int,
     category: str | None = Query(default=None),
     min_amount: float | None = Query(default=None),
     max_amount: float | None = Query(default=None),
-    db: Session = Depends(database.get_db)
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user) #can filter is
 ):
-    query = db.query(models.Expense).filter(models.Expense.user_id == user_id)
+    query = db.query(models.Expense).filter(models.Expense.user_id == current_user.id)
 
     if category:
         query = query.filter(models.Expense.category == category)
@@ -107,13 +108,16 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(database.get_db)
     db.refresh(db_user) # – get ID
     return db_user #return created user 
 
+
 #GET list of users
 @app.get("/users", response_model=list[schemas.UserRead])
 def list_users(db:Session = Depends(database.get_db)):
     return db.query(models.User).all()
 
 
-
+@app.get("/users", response_model=list[schemas.UserRead])
+def list_users(current_user: models.User = Depends(get_current_user), db:Session = Depends(database.get_db)):
+    return db.query(models.User).all()
 
 
 # #run Main
